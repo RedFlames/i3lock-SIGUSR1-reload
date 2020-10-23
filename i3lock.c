@@ -13,6 +13,7 @@
 #include <pwd.h>
 #include <sys/types.h>
 #include <string.h>
+#include <signal.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -1004,11 +1005,40 @@ static void raise_loop(xcb_window_t window) {
     }
 }
 
+char *image_path = NULL;
+char *image_raw_format = NULL;
+
+cairo_surface_t* load_image() {
+   cairo_surface_t *img = NULL;
+   if (image_raw_format != NULL && image_path != NULL) {
+      /* Read image. 'read_raw_image' returns NULL on error,
+        * so we don't have to handle errors here. */
+      img = read_raw_image(image_path, image_raw_format);
+   } else if (verify_png_image(image_path)) {
+      /* Create a pixmap to render on, fill it with the background color */
+      img = cairo_image_surface_create_from_png(image_path);
+      /* In case loading failed, we just pretend no -i was specified. */
+      if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) {
+           fprintf(stderr, "Could not load image \"%s\": %s\n",
+                   image_path, cairo_status_to_string(cairo_surface_status(img)));
+           img = NULL;
+      }
+   }
+   return img;
+}
+
+void sig_handler(int signum)
+{
+   if(img != NULL) free(img);
+   img = load_image();
+
+   redraw_screen();
+}
+
 int main(int argc, char *argv[]) {
     struct passwd *pw;
     char *username;
-    char *image_path = NULL;
-    char *image_raw_format = NULL;
+
 #ifndef __OpenBSD__
     int ret;
     struct pam_conv conv = {conv_callback, NULL};
@@ -1203,23 +1233,12 @@ int main(int argc, char *argv[]) {
     xcb_change_window_attributes(conn, screen->root, XCB_CW_EVENT_MASK,
                                  (uint32_t[]){XCB_EVENT_MASK_STRUCTURE_NOTIFY});
 
-    if (image_raw_format != NULL && image_path != NULL) {
-        /* Read image. 'read_raw_image' returns NULL on error,
-         * so we don't have to handle errors here. */
-        img = read_raw_image(image_path, image_raw_format);
-    } else if (verify_png_image(image_path)) {
-        /* Create a pixmap to render on, fill it with the background color */
-        img = cairo_image_surface_create_from_png(image_path);
-        /* In case loading failed, we just pretend no -i was specified. */
-        if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) {
-            fprintf(stderr, "Could not load image \"%s\": %s\n",
-                    image_path, cairo_status_to_string(cairo_surface_status(img)));
-            img = NULL;
-        }
-    }
+    img = load_image();
 
-    free(image_path);
-    free(image_raw_format);
+    //free(image_path);
+    //free(image_raw_format);
+
+    signal(SIGUSR1, sig_handler);
 
     /* Pixmap on which the image is rendered to (if any) */
     xcb_pixmap_t bg_pixmap = create_bg_pixmap(conn, screen, last_resolution, color);
